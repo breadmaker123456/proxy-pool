@@ -21,6 +21,16 @@ from glider_config import (
     listen_address,
     strategy as load_strategy,
 )
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 try:
     import requests
 except ImportError:
@@ -35,10 +45,11 @@ CONFIG_DIR = ensure_config_dir(BASE_DIR)
 SUBSCRIPTIONS_FILE = os.environ.get('SUBSCRIPTIONS_FILE', 'subscriptions.txt')  # path to txt file listing subscription URLs
 CONFIG_OUTPUT = CONFIG_DIR / 'glider.subscription.conf'  # output glider config path
 LISTEN = listen_address("10710")  # listen address for glider (e.g., ':10707' or '127.0.0.1:10809')
-INTERVAL_SECONDS = 6000  # refresh interval seconds
+INTERVAL_SECONDS = max(60, _env_int('SUBSCRIPTION_REFRESH_INTERVAL', 6000))  # refresh interval seconds
 GLIDER_BINARY = str(Path('glider') / ('glider.exe' if os.name == 'nt' else 'glider'))  # path to glider binary
 STRATEGY = load_strategy()
 CHECK_INTERVAL_SECONDS = load_check_interval(300)
+FILE_WATCH_INTERVAL = max(5, _env_int('SUBSCRIPTIONS_WATCH_INTERVAL', 15))
 RUN_ONCE = False  # set True to run once and exit
 DRY_RUN = False   # set True to fetch/parse only (no write/start)
 
@@ -275,9 +286,16 @@ def write_config(config_path: Path, forward_content: str, listen: str):
         f.write(forward_content)
 
 
-def read_subscriptions_file(path: Path) -> List[str]:
+def _file_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def read_subscriptions_file(path: Path) -> Tuple[List[str], float]:
     if not path.exists():
-        return []
+        return [], 0.0
     urls = []
     with open(path, 'r', encoding='utf-8') as f:
         for raw in f.readlines():
@@ -285,7 +303,7 @@ def read_subscriptions_file(path: Path) -> List[str]:
             if not line or line.startswith('#'):
                 continue
             urls.append(line)
-    return urls
+    return urls, _file_mtime(path)
 
 
 def run_glider(glider_path: Path, config_path: Path):
@@ -377,6 +395,25 @@ def _filter_forwards_with_tests(glider_path: Path, forward_lines: List[str]) -> 
     return ok
 
 
+def _wait_for_next_cycle(subs_path: Path, last_mtime: float) -> float:
+    poll = max(1, min(FILE_WATCH_INTERVAL, INTERVAL_SECONDS))
+    if poll <= 0:
+        poll = 1
+    waited = 0
+    print(f"[{datetime.now()}] Monitoring {subs_path} (max wait {INTERVAL_SECONDS}s, poll {poll}s)...")
+    while waited < INTERVAL_SECONDS:
+        remaining = INTERVAL_SECONDS - waited
+        sleep_for = poll if remaining > poll else remaining
+        time.sleep(sleep_for)
+        waited += sleep_for
+        current_mtime = _file_mtime(subs_path)
+        if current_mtime != last_mtime:
+            print(f"[{datetime.now()}] Detected change in {subs_path}; refreshing immediately.")
+            return current_mtime
+    print(f"[{datetime.now()}] Interval elapsed ({INTERVAL_SECONDS}s); refreshing subscriptions.")
+    return _file_mtime(subs_path)
+
+
 def main():
     # Use top-of-file variables instead of CLI args
     subs_path = Path(SUBSCRIPTIONS_FILE)
@@ -394,7 +431,7 @@ def main():
     except Exception:
         pass
 
-    urls = read_subscriptions_file(subs_path)
+    urls, last_subs_mtime = read_subscriptions_file(subs_path)
     if not urls:
         print(f"No subscriptions found in {subs_path}. Add URLs (one per line).")
         sys.exit(1)
@@ -445,9 +482,8 @@ def main():
     signal.signal(signal.SIGINT, _cleanup)
 
     while True:
-        print(f"[{datetime.now()}] Waiting {INTERVAL_SECONDS} seconds until next update...")
-        time.sleep(INTERVAL_SECONDS)
-        urls = read_subscriptions_file(subs_path)
+        last_subs_mtime = _wait_for_next_cycle(subs_path, last_subs_mtime)
+        urls, last_subs_mtime = read_subscriptions_file(subs_path)
         if not urls:
             print(f"[{datetime.now()}] No subscriptions found; skipping update.")
             continue
