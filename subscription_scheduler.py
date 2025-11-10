@@ -15,6 +15,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
 
+from glider_config import (
+    check_interval as load_check_interval,
+    ensure_config_dir,
+    listen_address,
+    strategy as load_strategy,
+)
 try:
     import requests
 except ImportError:
@@ -24,11 +30,15 @@ except ImportError:
 # Configurable variables
 # Edit these to control behavior without CLI args
 # ==========================
-SUBSCRIPTIONS_FILE = 'subscriptions.txt'  # path to txt file listing subscription URLs
-CONFIG_OUTPUT = str(Path('glider') / 'glider.subscription.conf')  # output glider config path
-LISTEN = ':10710'  # listen address for glider (e.g., ':10707' or '127.0.0.1:10809')
+BASE_DIR = Path(__file__).parent.absolute()
+CONFIG_DIR = ensure_config_dir(BASE_DIR)
+SUBSCRIPTIONS_FILE = os.environ.get('SUBSCRIPTIONS_FILE', 'subscriptions.txt')  # path to txt file listing subscription URLs
+CONFIG_OUTPUT = CONFIG_DIR / 'glider.subscription.conf'  # output glider config path
+LISTEN = listen_address("10710")  # listen address for glider (e.g., ':10707' or '127.0.0.1:10809')
 INTERVAL_SECONDS = 6000  # refresh interval seconds
 GLIDER_BINARY = str(Path('glider') / ('glider.exe' if os.name == 'nt' else 'glider'))  # path to glider binary
+STRATEGY = load_strategy()
+CHECK_INTERVAL_SECONDS = load_check_interval(300)
 RUN_ONCE = False  # set True to run once and exit
 DRY_RUN = False   # set True to fetch/parse only (no write/start)
 
@@ -239,7 +249,7 @@ def fetch_and_parse(urls: List[str]) -> Tuple[str, dict]:
     return combined, stats
 
 
-def build_base_config(listen: str) -> str:
+def build_base_config(listen: str, strategy_value: str, interval_value: int) -> str:
     return f"""# Verbose mode, print logs
 verbose=true
 
@@ -247,13 +257,13 @@ verbose=true
 listen={listen}
 
 # strategy: rr (round-robin) or ha (high-availability)
-strategy=rr
+strategy={strategy_value}
 
 # forwarder health check
 check={HEALTHCHECK_URL}
 
 # check interval(seconds)
-checkinterval=300
+checkinterval={interval_value}
 
 """
 
@@ -261,7 +271,7 @@ checkinterval=300
 def write_config(config_path: Path, forward_content: str, listen: str):
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, 'w', encoding='utf-8') as f:
-        f.write(build_base_config(listen))
+        f.write(build_base_config(listen, STRATEGY, CHECK_INTERVAL_SECONDS))
         f.write(forward_content)
 
 
@@ -305,7 +315,7 @@ def _choose_test_port(idx: int) -> int:
 
 def _write_temp_test_config(base_dir: Path, port: int, forward_line: str) -> Path:
     cfg_path = base_dir / f'glider.test.{port}.conf'
-    content = build_base_config(f'{TEST_LISTEN_HOST}:{port}') + (forward_line if forward_line.endswith('\n') else forward_line + '\n')
+    content = build_base_config(f'{TEST_LISTEN_HOST}:{port}', STRATEGY, CHECK_INTERVAL_SECONDS) + (forward_line if forward_line.endswith('\n') else forward_line + '\n')
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     with open(cfg_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -370,7 +380,7 @@ def _filter_forwards_with_tests(glider_path: Path, forward_lines: List[str]) -> 
 def main():
     # Use top-of-file variables instead of CLI args
     subs_path = Path(SUBSCRIPTIONS_FILE)
-    config_path = Path(CONFIG_OUTPUT)
+    config_path = CONFIG_OUTPUT
     glider_path = Path(GLIDER_BINARY)
 
     # Validate glider path exists

@@ -1,0 +1,46 @@
+version: "3.9"
+
+x-common-environment: &common-env
+  STRATEGY: "${STRATEGY:-rr}"
+
+x-common-volumes: &config-volumes
+  - "./subscriptions.txt:/app/subscriptions.txt"
+  - "./data/glider:/data/glider"
+
+services:
+  collector:
+    build: .
+    image: proxy-pool:latest
+    command: collector
+    restart: "no"
+    environment:
+      <<: *common-env
+      LISTEN_PORT: "${COLLECTOR_LISTEN_PORT:-10707}"
+      CHECK_INTERVAL: "${COLLECTOR_CHECK_INTERVAL:-30}"
+    volumes: *config-volumes
+
+  scheduler:
+    build: .
+    image: proxy-pool:latest
+    command: scheduler
+    restart: unless-stopped
+    ports:
+      - "${SCHEDULER_PORT:-10707}:10707"
+    environment:
+      <<: *common-env
+      LISTEN_PORT: "${SCHEDULER_LISTEN_PORT:-10707}"
+      CHECK_INTERVAL: "${SCHEDULER_CHECK_INTERVAL:-30}"
+    volumes: *config-volumes
+
+  subscription:
+    build: .
+    image: proxy-pool:latest
+    command: subscription
+    restart: unless-stopped
+    ports:
+      - "${SUBSCRIPTION_PORT:-10710}:10710"
+    environment:
+      <<: *common-env
+      LISTEN_PORT: "${SUBSCRIPTION_LISTEN_PORT:-10710}"
+      CHECK_INTERVAL: "${SUBSCRIPTION_CHECK_INTERVAL:-300}"
+    volumes: *config-volumes
